@@ -10,7 +10,7 @@ With `moses` you will be able in your ElasticSearch to:
 - **Delete** snapshots;
 - **Restore** snapshots;
 - **List** snapshots;
--
+
 It was also design to handle multiple environments through configuration files.
 
 Another great feature is that you can define when your snapshot will expire,
@@ -61,7 +61,7 @@ snapsKeep="10"
 
 How **list** snapshots with `moses`.
 
-```console
+```shell
 $ moses -e sample.conf -m list
 Loading environment "sample.conf" configurations...
 Checking if "127.0.0.1" is responding...
@@ -80,7 +80,7 @@ Listing all snapshots...
 
 How **create** snapshots with `moses`.
 
-```console
+```shell
 $ moses -e sample.conf -m create
 Loading environment "sample.conf" configurations...
 Checking if "127.0.0.1" is responding...
@@ -112,7 +112,7 @@ Listing all snapshots...
 
 How **delete** snapshots with `moses`.
 
-```console
+```shell
 $ moses -e sample.conf -m delete
 Loading environment "sample.conf" configurations...
 Checking if "127.0.0.1" is responding...
@@ -137,7 +137,7 @@ Snapshot "snapshot_20170112-180059" was successfully deleted!
 
 How **restore** snapshots with `moses`.
 
-```console
+```shell
 $ moses -e sample.conf -m restore
 Loading environment "sample.conf" configurations...
 Checking if "127.0.0.1" is responding...
@@ -179,6 +179,7 @@ or its affiliates in the United States and/or other countries.
    [es-url]: https://www.elastic.co
    [jq-url]: https://stedolan.github.io/jq/
    [es-plugin-s3-doc-url]: https://www.elastic.co/guide/en/elasticsearch/plugins/current/repository-s3-repository.html
+   [moses-runtime-url]: https://github.com/amalucelli/moses
    [moses-license-url]: https://github.com/amalucelli/moses/blob/master/LICENSE
    [license-badge]: https://img.shields.io/badge/license-apache-757575.svg?style=flat-square
    [runtime-badge]: https://img.shields.io/badge/runtime-shell-orange.svg?style=flat-square
