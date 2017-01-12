@@ -1,0 +1,400 @@
+#!/bin/bash
+#
+# Copyright 2017, Alexandre Malucelli, All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+function showHelp() {
+   # intentionally mixed spaces and tabs here
+   # tabs are stripped by "<<-EOF", spaces are kept in the output
+   cat >&2 <<-EOF
+
+	Usage: moses [-h] -e {environment} -m {list,create,restore,delete,purge}
+
+	Optional Arguments:
+
+	   -h, --help   show this help message
+
+	Required Arguments:
+
+	   -e, --environment {environment}   environment file
+	   -m, --mode {list,create,restore,delete,purge}   mode of operation
+	EOF
+   exit 0
+}
+
+function setArguments() {
+   local optEnv
+   export optMode
+   # transform long options to short ones
+   for arg in "$@"; do
+      shift
+      case "$arg" in
+         "--environment") set -- "$@" "-e" ;;
+         "--mode") set -- "$@" "-m" ;;
+         "--help") set -- "$@" "-h" ;;
+         *) set -- "$@" "$arg"
+      esac
+   done
+   # get options
+   while getopts 'e:m:h' opt; do
+      case $opt in
+         e) optEnv=$OPTARG;;
+         m) optMode=$OPTARG;;
+         h) showHelp;;
+         *) exit 1;;
+      esac
+   done
+   # check if the environment parameter was passed
+   if [ -z "${optEnv}" ]; then
+      echo "Error: File of environment is a required parameter."
+      exit 1
+   fi
+   # check if the mode of operation was passed
+   if [ -z "${optMode}" ]; then
+      echo "Error: Mode of operation is a required parameter."
+      exit 1
+   else
+      # check if the operation mode is a valid mode
+      if [ "${optMode}" != "list" ] && \
+         [ "${optMode}" != "create" ] && \
+         [ "${optMode}" != "restore" ] && \
+         [ "${optMode}" != "delete" ] && \
+         [ "${optMode}" != "purge" ]; then
+         echo "Error: Operation not allowed."
+         exit 1
+      fi
+   fi
+   # check if the file exists
+   if [ -f "${optEnv}" ]; then
+      echo "Loading environment \"${optEnv}\" configurations..."
+      # shellcheck disable=SC1090
+      source "${optEnv}"
+   else
+      echo "Error: Environment ${optEnv} don't exist."
+      exit 1
+   fi
+   # check if all the necessary parameters were set
+   # shellcheck disable=SC2154
+   if [ ! "$awsRegion" ] || \
+      [ ! "$awsAccessKey" ] || \
+      [ ! "$awsSecretKey" ] || \
+      [ ! "$esRepository" ] || \
+      [ ! "$esMasterAddress" ] || \
+      [ ! "$retainDays" ] || \
+      [ ! "$snapsKeep" ]; then
+      echo "Error: Required parameters are missing, please check ${optEnv} again."
+      exit 1
+   fi
+}
+
+function checkRequirements() {
+   local cmd=("curl" "jq")
+   for c in ${cmd[*]}; do
+      command -v "${c}" > /dev/null 2>&1
+      # shellcheck disable=SC2181
+      if [ "$?" -ne 0 ]; then
+         echo >&2 "Error: this scripts needs the ${c} command that is missing."
+         exit 1
+      fi
+   done
+}
+
+function checkStatusMaster() {
+   local curlOutput
+   # check if elasticsearch master address is responding
+   echo "Checking if \"${esMasterAddress}\" is responding..."
+   curlOutput=$(curl -sXGET --max-time 10 \
+      "http://${esMasterAddress}:9200/_cluster/health?pretty" | jq -r '.status' 2>/dev/null)
+   if [ "${curlOutput}" == "green" ]; then
+      echo "Good! \"${esMasterAddress}\" is up and running."
+   else
+      echo "Error: ElasticSearch with address \"${esMasterAddress}\" isn't reachable or isn't running."
+      exit 1
+   fi
+}
+
+function checkRepository() {
+   local curlOutput
+   local statusRepo
+   # check if the repository exists
+   echo "Checking if \"${esRepository}\" exists inside ElasticSearch..."
+   curlOutput=$(curl -sXGET \
+      "http://${esMasterAddress}:9200/_snapshot/_all?pretty" | jq 'has("'"${esRepository}"'")' 2>/dev/null)
+   if [ "${curlOutput}" == "true" ]; then
+      echo "Good! \"${esRepository}\" already exists."
+   else
+      echo "Repository \"${esRepository}\" don't exists yet, let me try create it for you..."
+      curlOutput=$(curl -sXPUT "http://${esMasterAddress}:9200/_snapshot/${esRepository}?pretty" -d '
+      {
+         "type": "s3",
+         "settings": {
+            "bucket": "'"${esRepository}"'",
+            "region": "'"${awsRegion}"'",
+            "access_key": "'"${awsAccessKey}"'",
+            "secret_key": "'"${awsSecretKey}"'",
+            "compress": "true"
+         }
+      }')
+      statusRepo=$(echo "${curlOutput}" | jq '.[]')
+      if [ "${statusRepo}" == "true" ]; then
+         echo "Repository \"${esRepository}\" was successfully created!"
+      else
+         echo "Error: Can't create the repository."
+         echo "${curlOutput}" | jq '.'
+         exit 1
+      fi
+   fi
+}
+
+function listSnapshot() {
+   local curlOutput
+   local currentTime
+   local expirationTime
+   local statusDelete
+   local snapDeleted
+   declare -a snapCreateDate
+   declare -a snapName
+   echo "Listing all snapshots..."
+   snapCreateDate=($(curl -sXGET \
+      "http://${esMasterAddress}:9200/_snapshot/${esRepository}/_all?pretty" \
+      | jq -r '.[] | .[].start_time_in_millis' 2>/dev/null | sort))
+   snapName=($(curl -sXGET \
+      "http://${esMasterAddress}:9200/_snapshot/${esRepository}/_all?pretty" \
+      | jq -r '.[] | .[].snapshot' 2>/dev/null | sort))
+   # milliseconds rounded to nearest second (000)
+   currentTime=$(date '+%s')"000"
+   expirationTime=$((24*60*60*retainDays))"000"
+   #expirationTime=$((1*retainDays))"000"
+   if [ ${#snapName[@]} -gt 0 ]; then
+      for snapMs in "${!snapCreateDate[@]}"; do
+         if [ $((currentTime - snapCreateDate[snapMs])) -gt "${expirationTime}" ]; then
+            echo "- \"${snapName[$snapMs]}\" [expired]"
+         else
+            echo "- \"${snapName[$snapMs]}\""
+         fi
+      done
+   else
+      echo "There isn't any snapshots in the \"${esRepository}\" repository..."
+      return 1
+   fi
+}
+
+function deleteSnapshot() {
+   local curlOutput
+   # shellcheck disable=SC2178
+   local snapName=${1}
+   local optForce=${2:-"false"}
+   local statusDelete
+   local userReply
+   # shellcheck disable=SC2128
+   if [ ! -n "${snapName}" ]; then
+      listSnapshot
+      # shellcheck disable=SC2181
+      if [ "$?" -eq 1 ]; then
+         exit 1
+      fi
+      read -rp "Select a snapshot to delete: " snapName
+   fi
+   # check if the snapshot is valid
+   curlOutput=$(curl -sIXGET \
+      "http://${esMasterAddress}:9200/_snapshot/${esRepository}/${snapName}?pretty" \
+      | grep HTTP | awk '{ print $2 }' | tail -n 1)
+   if [ "${curlOutput}" -eq "200" ]; then
+      if [ "${optForce}" == "false" ]; then
+         echo "Warning: This is going to delete \"${snapName}\" snapshot."
+         read -rp "Are you sure? (yes/no) " userReply
+      else
+         userReply="yes"
+      fi
+      if [[ "${userReply}" == "yes" ]]; then
+         echo "Deleting \"${snapName}\"..."
+         curlOutput=$(curl -sXDELETE \
+            "http://${esMasterAddress}:9200/_snapshot/${esRepository}/${snapName}?pretty")
+         statusDelete=$(echo "${curlOutput}" | jq '.[]')
+         if [ "${statusDelete}" == "true" ]; then
+            echo "Snapshot \"${snapName}\" was successfully deleted!"
+         else
+            echo "Error: Can't delete the snapshot \"${snapName}\"."
+            echo "${curlOutput}" | jq '.'
+            exit 1
+         fi
+      else
+         echo "Error: User canceled. Aborting."
+         exit 1
+      fi
+   else
+      echo "Error: \"${snapName}\" isn't a valid snapshot. Aborting."
+      exit 1
+   fi
+}
+
+function deleteExpired() {
+   local curlOutput
+   local currentTime
+   local expirationTime
+   #local statusDelete
+   local snapDeleted
+   declare -a snapCreateDate
+   declare -a snapName
+   echo "Detecting if there's any outdated snapshots..."
+   listSnapshot
+   snapCreateDate=($(curl -sXGET \
+      "http://${esMasterAddress}:9200/_snapshot/${esRepository}/_all?pretty" \
+      | jq -r '.[] | .[].start_time_in_millis' 2>/dev/null | sort))
+   snapName=($(curl -sXGET \
+      "http://${esMasterAddress}:9200/_snapshot/${esRepository}/_all?pretty" \
+      | jq -r '.[] | .[].snapshot' 2>/dev/null | sort))
+   # milliseconds rounded to nearest second (000)
+   currentTime=$(date '+%s')"000"
+   expirationTime=$((24*60*60*retainDays))"000"
+   #expirationTime=$((1*retainDays))"000"
+   # as we don't have any deleted snapshot yet
+   snapDeleted=0
+   if [ ${#snapCreateDate[@]} -ge "${snapsKeep}" ]; then
+      for snapMs in "${!snapCreateDate[@]}"; do
+         if [ $((currentTime - snapCreateDate[snapMs])) -gt "${expirationTime}" ]; then
+            echo "Snapshot \"${snapName[$snapMs]}\" is outdated!"
+            # deleteSnapshot {name} {force}
+            deleteSnapshot "${snapName[$snapMs]}" "true"
+            ((snapDeleted++))
+         fi
+         if [ $((${#snapCreateDate[@]} - snapDeleted)) -le "${snapsKeep}" ]; then
+            break;
+         fi
+      done
+   else
+      echo "Skipping delete as you have ${snapsKeep} or less snapshots..."
+   fi
+}
+
+function createSnapshot() {
+   local curlOutput
+   local localDate
+   local statusSnapshot
+   deleteExpired
+   localDate=$(date +%Y%m%d-%H%M%S)
+   echo "Creating \"snapshot_${localDate}\"..."
+   curlOutput=$(curl -sXPOST \
+      "http://${esMasterAddress}:9200/_snapshot/${esRepository}/snapshot_${localDate}?wait_for_completion=true&pretty")
+   statusSnapshot=$(echo "${curlOutput}" | jq -r '.[] | .state' 2>/dev/null)
+   if [ "${statusSnapshot}" == "SUCCESS" ]; then
+      echo "Snapshot \"snapshot_${localDate}\" was successfully created!"
+      listSnapshot
+   else
+      echo "Error: Can't create the snapshot."
+      echo "${curlOutput}" | jq '.'
+      exit 1
+   fi
+}
+
+function purgeSnapshots() {
+   local curlOutput
+   local currentTime
+   #local statusDelete
+   local userReply
+   declare -a snapCreateDate
+   declare -a snapName
+   listSnapshot
+   # shellcheck disable=SC2181
+   if [ "$?" -eq 1 ]; then
+      exit 1
+   fi
+   echo "Warning: This is going to purge all snapshots above."
+   read -rp "Are you sure? (yes/no) " userReply
+   if [[ "${userReply}" == "yes" ]]; then
+      snapName=($(curl -sXGET \
+         "http://${esMasterAddress}:9200/_snapshot/${esRepository}/_all?pretty" \
+         | jq -r '.[] | .[].snapshot' 2>/dev/null | sort))
+      if [ ${#snapName[@]} -gt 0 ]; then
+         for snap in "${!snapName[@]}"; do
+            # deleteSnapshot {name} {force}
+            deleteSnapshot "${snapName[$snap]}" "true"
+         done
+      else
+         echo "There isn't any snapshots in the \"${esRepository}\" repository..."
+      fi
+   else
+      echo "Error: User canceled. Aborting."
+      exit 1
+   fi
+}
+
+function restoreSnapshot() {
+   local curlOutput
+   local snapName
+   local statusRestore
+   local userReply
+   listSnapshot
+   # shellcheck disable=SC2181
+   if [ "$?" -eq 1 ]; then
+      exit 1
+   fi
+   read -rp "Select a snapshot to restore: " snapName
+   # check if the snapshot is valid
+   curlOutput=$(curl -sIXGET \
+      "http://${esMasterAddress}:9200/_snapshot/${esRepository}/${snapName}?pretty" \
+      | grep HTTP | awk '{ print $2 }' | tail -n 1)
+   if [ "${curlOutput}" -eq "200" ]; then
+      echo "Warning: This is going to restore \"${snapName}\" snapshot."
+      read -rp "Are you sure? (yes/no) " userReply
+      if [[ "${userReply}" == "yes" ]]; then
+         echo "Restoring \"${snapName}\"..."
+         curlOutput=$(curl -sXPOST \
+            "http://${esMasterAddress}:9200/_snapshot/${esRepository}/${snapName}/_restore?pretty")
+         statusRestore=$(echo "${curlOutput}" | jq '.[]')
+         if [ "${statusRestore}" == "true" ]; then
+            echo "Snapshot \"${snapName}\" was successfully restored!"
+         else
+            echo "Error: Can't restore the \"${snapName}\"."
+            echo "${curlOutput}" | jq '.'
+            exit 1
+         fi
+      else
+         echo "Error: User canceled. Aborting."
+         exit 1
+      fi
+   else
+      echo "Error: \"${snapName}\" isn't a valid snapshot. Aborting."
+      exit 1
+   fi
+}
+
+function doMoses() {
+   checkRequirements
+   setArguments "$@"
+   checkStatusMaster
+   checkRepository
+   case "${optMode}" in
+      "list")
+         listSnapshot
+         ;;
+      "create")
+         createSnapshot
+         ;;
+      "restore")
+         restoreSnapshot
+         ;;
+      "delete")
+         deleteSnapshot
+         ;;
+      "purge")
+         purgeSnapshots
+         ;;
+   esac
+}
+
+# wrapped up in a function so that we have some protection
+# against only getting half the file
+doMoses "$@"
