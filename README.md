@@ -2,7 +2,7 @@
 [![Runtime][runtime-badge]][moses-runtime-url]
 [![License][license-badge]][moses-license-url]
 
-`moses` is the missing tool to handle snapshots of [ElasticSearch](es-url) that are hosted in [AWS S3](aws-s3-url).
+`moses` is the missing tool to handle snapshots of [ElasticSearch][es-url] that are hosted in [AWS S3][aws-s3-url].
 
 With `moses` you will be able in your ElasticSearch to:
 
@@ -22,7 +22,7 @@ making it easy to implement a life cycle on them.
 
 * A `bucket` in AWS S3;
 * An user in AWS IAM with _Access Key_ and _Secret Key_;
-* A policy in AWS IAM with the permissions described in [repository-s3 official documentation](es-plugin-s3-doc-url);
+* A policy in AWS IAM with the permissions described in [repository-s3 official documentation][es-plugin-s3-doc-url];
 
 ### ElasticSearch
 
@@ -33,7 +33,7 @@ making it easy to implement a life cycle on them.
 ### Linux
 
 * curl
-* [jq](jq-url)
+* [jq][jq-url]
 
 ## Configuration
 
