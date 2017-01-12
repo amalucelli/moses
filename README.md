@@ -27,6 +27,7 @@ making it easy to implement a life cycle on them.
 ### ElasticSearch
 
 * ElasticSearch 5
+* `repository-s3` plugin installed
 
 **Important**: Only tested in ElasticSearch 5, but probably will work with lowers versions of ElasticSearch.
 
