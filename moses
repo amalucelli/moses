@@ -284,7 +284,10 @@ function createSnapshot() {
    local localDate
    local statusSnapshot
    deleteExpired
-   localDate=$(date +%Y%m%d-%H%M%S)
+   if [ -z "${snapsPattern}" ]; then
+      snapsPattern="%Y%m%d-%H%M%S"
+   fi
+   localDate=$(date +"${snapsPattern}")
    echo "Creating \"snapshot_${localDate}\"..."
    curlOutput=$(curl -sXPOST \
       "http://${esMasterAddress}:9200/_snapshot/${esRepository}/snapshot_${localDate}?wait_for_completion=true&pretty")

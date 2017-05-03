@@ -56,6 +56,10 @@ retainDays="10"
 # how many snapshots we need to keep
 # value of -1 disable this feature
 snapsKeep="10"
+# snapshot name pattern
+# "%Y%m%d-%H%M%S" will produce "snapshot_20170111-181021" (default)
+# "%Y%m%d" will produce "snapshot_20170111"
+snapsPattern="%Y%m%d-%H%M%S"
 ```
 
 ## Usage
